@@ -1,0 +1,10 @@
+# 빌드 결과물
+bin/
+obj/
+*.exe
+*.layout
+*.depend
+
+# 기타 설정 파일
+.vscode/
+.idea/
