@@ -6,6 +6,7 @@
 #endif
 
 #include <windows.h>
+#include <windowsx.h>
 #include <commctrl.h>
 #include <shlobj.h>
 #include <vector>
@@ -20,15 +21,17 @@
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
+#define WM_TREE_CHECK_CHANGED (WM_USER + 1)
+
 // 색상 정의
-const COLORREF COLOR_BG = RGB(30, 30, 30);
-const COLORREF COLOR_TEXT = RGB(220, 220, 220);
-const COLORREF COLOR_ACCENT = RGB(0, 120, 215);
-const COLORREF COLOR_CONTROL_BG = RGB(45, 45, 48);
+const COLORREF COLOR_BG = RGB(45, 45, 48);
+const COLORREF COLOR_TEXT = RGB(255, 255, 255);
+const COLORREF COLOR_ACCENT = RGB(0, 150, 255);
+const COLORREF COLOR_CONTROL_BG = RGB(60, 60, 65);
 
 // 전역 변수
 HINSTANCE hInst;
-HWND hWndTree, hWndLog, hWndBtnRun;
+HWND hWndTree, hWndLog, hWndBtnRun, hWndBtnCustom, hWndProgress;
 HIMAGELIST hImageList;
 HFONT hFontMain, hFontTitle;
 HBRUSH hBrushBG, hBrushControl;
@@ -49,13 +52,17 @@ LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 void InitTreeView(HWND hWnd);
 void AddDriveNodes();
 void ExpandNode(HWND hWnd, HTREEITEM hItem);
-void ProcessCheckedItems(HWND hWnd);
+void ProcessCheckedItems(HWND hWnd, time_t fixedTime = 0);
 void GetCheckedFiles(HTREEITEM hItem, std::vector<CheckedItem>& items);
+void SetCheckStateRecursive(HWND hWnd, HTREEITEM hItem, BOOL checked);
 void WriteLog(const std::wstring& message);
 time_t getFileTime(const std::wstring& filePath);
 bool modifyFileTime(const std::wstring& filePath, time_t newTime);
 time_t subtractOneYear(time_t originalTime);
 std::wstring timeToWString(time_t timeValue);
+std::wstring timeToWString(time_t timeValue);
+LRESULT CALLBACK DatePickerProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+void ShowDatePickerAndRun(HWND hWndParent);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     hInst = hInstance;
@@ -63,7 +70,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Common Controls 초기화 (확장 버전)
     INITCOMMONCONTROLSEX icex;
     icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
-    icex.dwICC = ICC_TREEVIEW_CLASSES | ICC_STANDARD_CLASSES;
+    icex.dwICC = ICC_TREEVIEW_CLASSES | ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS | ICC_DATE_CLASSES;
     InitCommonControlsEx(&icex);
 
     hBrushBG = CreateSolidBrush(COLOR_BG);
@@ -78,6 +85,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.lpszClassName = CLASS_NAME;
     wc.hbrBackground = hBrushBG;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    RegisterClassW(&wc);
+
+    // 날짜 선택기 클래스 등록
+    wc.lpszClassName = L"DatePickerClass";
+    wc.hbrBackground = hBrushBG;
+    wc.lpfnWndProc = DatePickerProc;
     RegisterClassW(&wc);
 
     HWND hWnd = CreateWindowExW(0, CLASS_NAME, L"Fraud - File Date Modifier",
@@ -105,7 +118,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
             hWndTree = CreateWindowExW(0, WC_TREEVIEWW, NULL,
                 WS_VISIBLE | WS_CHILD | TVS_HASLINES | TVS_HASBUTTONS | TVS_LINESATROOT | TVS_CHECKBOXES,
-                20, 60, 420, 530, hWnd, (HMENU)100, hInst, NULL);
+                20, 60, 420, 500, hWnd, (HMENU)100, hInst, NULL);
             SendMessageW(hWndTree, WM_SETFONT, (WPARAM)hFontMain, TRUE);
             
             // 트리뷰 다크 모드 색상 설정
@@ -113,10 +126,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             TreeView_SetTextColor(hWndTree, COLOR_TEXT);
             TreeView_SetLineColor(hWndTree, COLOR_ACCENT);
 
-            hWndBtnRun = CreateWindowW(L"BUTTON", L"Run", 
+            hWndProgress = CreateWindowExW(0, PROGRESS_CLASSW, NULL,
+                WS_VISIBLE | WS_CHILD | PBS_SMOOTH,
+                20, 570, 420, 25, hWnd, NULL, hInst, NULL);
+            SendMessageW(hWndProgress, PBM_SETBKCOLOR, 0, (LPARAM)COLOR_CONTROL_BG);
+            SendMessageW(hWndProgress, PBM_SETBARCOLOR, 0, (LPARAM)COLOR_ACCENT);
+
+            hWndBtnRun = CreateWindowW(L"BUTTON", L"Run (1Y Ago)", 
                 WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-                20, 605, 420, 45, hWnd, (HMENU)1, hInst, NULL);
+                20, 605, 205, 45, hWnd, (HMENU)1, hInst, NULL);
             SendMessageW(hWndBtnRun, WM_SETFONT, (WPARAM)hFontMain, TRUE);
+
+            hWndBtnCustom = CreateWindowW(L"BUTTON", L"Run (Pick Date)", 
+                WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+                235, 605, 205, 45, hWnd, (HMENU)2, hInst, NULL);
+            SendMessageW(hWndBtnCustom, WM_SETFONT, (WPARAM)hFontMain, TRUE);
 
             hWndLog = CreateWindowExW(0, L"EDIT", NULL,
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
@@ -147,11 +171,31 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 if (lpnmtv->action == TVE_EXPAND) {
                     ExpandNode(hWndTree, lpnmtv->itemNew.hItem);
                 }
+            } else if (lpnmhdr->code == TVN_DELETEITEMW) {
+                LPNMTREEVIEWW lpnmtv = (LPNMTREEVIEWW)lParam;
+                if (lpnmtv->itemOld.lParam) {
+                    delete (TreeItemData*)lpnmtv->itemOld.lParam;
+                }
+            } else if (lpnmhdr->code == NM_CLICK && lpnmhdr->hwndFrom == hWndTree) {
+                TVHITTESTINFO ht = {0};
+                GetCursorPos(&ht.pt);
+                ScreenToClient(hWndTree, &ht.pt);
+                TreeView_HitTest(hWndTree, &ht);
+                if (ht.flags & TVHT_ONITEMSTATEICON) {
+                    PostMessage(hWnd, WM_TREE_CHECK_CHANGED, 0, (LPARAM)ht.hItem);
+                }
             }
             break;
         }
+        case WM_TREE_CHECK_CHANGED: {
+            HTREEITEM hItem = (HTREEITEM)lParam;
+            BOOL checked = TreeView_GetCheckState(hWndTree, hItem);
+            SetCheckStateRecursive(hWndTree, hItem, checked);
+            break;
+        }
         case WM_COMMAND: {
-            if (LOWORD(wParam) == 1) ProcessCheckedItems(hWnd);
+            if (LOWORD(wParam) == 1) ProcessCheckedItems(hWnd, 0); // 0 means 1 year ago
+            else if (LOWORD(wParam) == 2) ShowDatePickerAndRun(hWnd);
             break;
         }
         case WM_DESTROY:
@@ -269,6 +313,9 @@ void ExpandNode(HWND hWnd, HTREEITEM hItem) {
         tvis.item.lParam = (LPARAM)new TreeItemData{info.fullPath, info.isDir, false};
         
         HTREEITEM hNewItem = TreeView_InsertItem(hWnd, &tvis);
+        if (TreeView_GetCheckState(hWnd, hItem)) {
+            TreeView_SetCheckState(hWnd, hNewItem, TRUE);
+        }
         if (info.isDir) {
             TVITEMW childItem = {0};
             childItem.mask = TVIF_CHILDREN | TVIF_HANDLE;
@@ -296,34 +343,46 @@ void GetCheckedFiles(HTREEITEM hItem, std::vector<CheckedItem>& items) {
     }
 }
 
-void ProcessCheckedItems(HWND hWnd) {
+void ProcessCheckedItems(HWND hWnd, time_t fixedTime) {
     std::vector<CheckedItem> items;
     GetCheckedFiles(TreeView_GetRoot(hWndTree), items);
     if (items.empty()) {
         MessageBoxW(hWnd, L"Please check files first.", L"Info", MB_OK | MB_ICONINFORMATION);
         return;
     }
-    if (MessageBoxW(hWnd, L"Modify selected files to 1 year ago?", L"Confirm", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+
+    std::wstring confirmMsg = (fixedTime == 0) ? L"Modify selected files to 1 year ago?" : L"Modify selected files to the chosen date?";
+    if (MessageBoxW(hWnd, confirmMsg.c_str(), L"Confirm", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
 
     int successCount = 0;
-    for (const auto& item : items) {
+    int total = (int)items.size();
+    SendMessage(hWndProgress, PBM_SETRANGE32, 0, total);
+    SendMessage(hWndProgress, PBM_SETPOS, 0, 0);
+
+    for (int i = 0; i < total; ++i) {
+        const auto& item = items[i];
         time_t currentTime = getFileTime(item.fullPath);
-        if (currentTime == 0) continue;
-        time_t newTime = subtractOneYear(currentTime);
-        if (modifyFileTime(item.fullPath, newTime)) {
-            WriteLog(L"[Success] " + item.fullPath);
-            size_t lastSlash = item.fullPath.find_last_of(L"\\");
-            std::wstring fileName = (lastSlash == std::wstring::npos) ? item.fullPath : item.fullPath.substr(lastSlash + 1);
-            std::wstring newText = fileName + L" [" + timeToWString(newTime) + L"]";
-            TVITEMW tvItem = {0};
-            tvItem.mask = TVIF_TEXT | TVIF_HANDLE;
-            tvItem.hItem = item.hItem;
-            tvItem.pszText = (LPWSTR)newText.c_str();
-            TreeView_SetItem(hWndTree, &tvItem);
-            TreeView_SetCheckState(hWndTree, item.hItem, FALSE);
-            successCount++;
+        if (currentTime != 0) {
+            time_t newTime = (fixedTime == 0) ? subtractOneYear(currentTime) : fixedTime;
+            if (modifyFileTime(item.fullPath, newTime)) {
+                WriteLog(L"[Success] " + item.fullPath);
+                size_t lastSlash = item.fullPath.find_last_of(L"\\");
+                std::wstring fileName = (lastSlash == std::wstring::npos) ? item.fullPath : item.fullPath.substr(lastSlash + 1);
+                std::wstring newText = fileName + L" [" + timeToWString(newTime) + L"]";
+                TVITEMW tvItem = {0};
+                tvItem.mask = TVIF_TEXT | TVIF_HANDLE;
+                tvItem.hItem = item.hItem;
+                tvItem.pszText = (LPWSTR)newText.c_str();
+                TreeView_SetItem(hWndTree, &tvItem);
+                TreeView_SetCheckState(hWndTree, item.hItem, FALSE);
+                successCount++;
+            }
         }
+        SendMessage(hWndProgress, PBM_SETPOS, i + 1, 0);
     }
+    UpdateWindow(hWndTree);
+    SetFocus(hWndTree);
+
     std::wstringstream res;
     res << L"Complete. Success: " << successCount << L"/" << items.size();
     MessageBoxW(hWnd, res.str().c_str(), L"Done", MB_OK | MB_ICONINFORMATION);
@@ -373,4 +432,109 @@ std::wstring timeToWString(time_t timeValue) {
     struct tm* timeinfo = localtime(&timeValue);
     wcsftime(buffer, 100, L"%Y-%m-%d", timeinfo);
     return std::wstring(buffer);
+}
+
+void SetCheckStateRecursive(HWND hWnd, HTREEITEM hItem, BOOL checked) {
+    HTREEITEM hChild = TreeView_GetChild(hWnd, hItem);
+    while (hChild) {
+        TreeView_SetCheckState(hWnd, hChild, checked);
+        SetCheckStateRecursive(hWnd, hChild, checked);
+        hChild = TreeView_GetNextSibling(hWnd, hChild);
+    }
+}
+
+LRESULT CALLBACK DatePickerProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    static time_t* pSelectedTime = NULL;
+
+    switch (message) {
+        case WM_CREATE: {
+            CREATESTRUCT* pcs = (CREATESTRUCT*)lParam;
+            pSelectedTime = (time_t*)pcs->lpCreateParams;
+
+            HWND hDP = CreateWindowExW(0, DATETIMEPICK_CLASSW, NULL,
+                WS_BORDER | WS_CHILD | WS_VISIBLE | DTS_SHORTDATEFORMAT,
+                20, 20, 200, 30, hDlg, (HMENU)1000, hInst, NULL);
+            SendMessageW(hDP, WM_SETFONT, (WPARAM)hFontMain, TRUE);
+            
+            // 날짜 선택기 색상 설정 (일부 시스템에서 지원)
+            SendMessageW(hDP, DTM_SETMCCOLOR, MCSC_BACKGROUND, (LPARAM)COLOR_CONTROL_BG);
+            SendMessageW(hDP, DTM_SETMCCOLOR, MCSC_TEXT, (LPARAM)COLOR_TEXT);
+            SendMessageW(hDP, DTM_SETMCCOLOR, MCSC_TITLEBK, (LPARAM)COLOR_ACCENT);
+            SendMessageW(hDP, DTM_SETMCCOLOR, MCSC_TITLETEXT, (LPARAM)COLOR_TEXT);
+
+            HWND hOk = CreateWindowW(L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                20, 70, 90, 35, hDlg, (HMENU)IDOK, hInst, NULL);
+            SendMessageW(hOk, WM_SETFONT, (WPARAM)hFontMain, TRUE);
+
+            HWND hCancel = CreateWindowW(L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                130, 70, 90, 35, hDlg, (HMENU)IDCANCEL, hInst, NULL);
+            SendMessageW(hCancel, WM_SETFONT, (WPARAM)hFontMain, TRUE);
+            return 0;
+        }
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLORBTN: {
+            HDC hdc = (HDC)wParam;
+            SetTextColor(hdc, COLOR_TEXT);
+            SetBkColor(hdc, COLOR_BG);
+            return (LRESULT)hBrushBG;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wParam) == IDOK) {
+                HWND hDP = GetDlgItem(hDlg, 1000);
+                SYSTEMTIME st;
+                SendMessageW(hDP, DTM_GETSYSTEMTIME, 0, (LPARAM)&st);
+
+                struct tm t = { 0 };
+                t.tm_year = st.wYear - 1900;
+                t.tm_mon = st.wMonth - 1;
+                t.tm_mday = st.wDay;
+                t.tm_hour = 12;
+                t.tm_isdst = -1;
+
+                if (pSelectedTime) *pSelectedTime = mktime(&t);
+                SendMessage(hDlg, WM_CLOSE, 0, 0);
+            }
+            else if (LOWORD(wParam) == IDCANCEL) {
+                if (pSelectedTime) *pSelectedTime = 0;
+                SendMessage(hDlg, WM_CLOSE, 0, 0);
+            }
+            break;
+        case WM_CLOSE:
+            EnableWindow(GetWindow(hDlg, GW_OWNER), TRUE);
+            SetFocus(GetWindow(hDlg, GW_OWNER));
+            DestroyWindow(hDlg);
+            break;
+    }
+    return DefWindowProcW(hDlg, message, wParam, lParam);
+}
+
+void ShowDatePickerAndRun(HWND hWndParent) {
+    static time_t selectedTime = 0;
+    selectedTime = 0;
+
+    int w = 260, h = 160;
+    RECT rcParent;
+    GetWindowRect(hWndParent, &rcParent);
+    int x = rcParent.left + (rcParent.right - rcParent.left - w) / 2;
+    int y = rcParent.top + (rcParent.bottom - rcParent.top - h) / 2;
+
+    HWND hPopup = CreateWindowExW(WS_EX_TOPMOST | WS_EX_DLGMODALFRAME, L"DatePickerClass", L"Select Date",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        x, y, w, h, hWndParent, NULL, hInst, &selectedTime);
+
+    if (hPopup) {
+        EnableWindow(hWndParent, FALSE);
+        
+        MSG msg;
+        while (IsWindow(hPopup) && GetMessage(&msg, NULL, 0, 0)) {
+            if (!IsDialogMessage(hPopup, &msg)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+        }
+
+        if (selectedTime != 0) {
+            ProcessCheckedItems(hWndParent, selectedTime);
+        }
+    }
 }
